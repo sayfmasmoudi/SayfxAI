@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FIN3 | AR Automation Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        .glass-panel { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(4px); }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Status Dots */
+        .status-dot { height: 8px; width: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .dot-green { background-color: #10b981; box-shadow: 0 0 8px #10b981; }
+        .dot-red { background-color: #ef4444; }
+        .dot-idle { background-color: #9ca3af; }
+
+        /* Badge Styles */
+        .badge { @apply px-2 py-0.5 rounded text-[10px] font-bold tracking-wide uppercase; }
+        .badge-urgent { @apply bg-red-100 text-red-800 border border-red-200; }
+        .badge-standard { @apply bg-yellow-100 text-yellow-800 border border-yellow-200; }
+        .badge-gentle { @apply bg-blue-100 text-blue-800 border border-blue-200; }
+        .badge-monitor { @apply bg-gray-100 text-gray-800 border border-gray-200; }
+        .badge-predue { @apply bg-emerald-100 text-emerald-800 border border-emerald-200; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 h-screen overflow-hidden selection:bg-blue-100">
+
+    <div id="app-root" class="h-full w-full"></div>
+
+    <script>
+        // ==========================================
+        // 1. STATE MANAGEMENT & MOCK DATA
+        // ==========================================
+        
+        const ADMIN_CREDS = { email: 'admin@fin3.dev', pass: 'Fin3_Admin_2026!' };
+        
+        const MOCK_CUSTOMERS = [
+            { id: 'c_1', name: 'Acme Corp', email: 'billing@acme.com', tier: 'High Risk', score: 45, notes: 'Frequent late payer. Send urgent headers.' },
+            { id: 'c_2', name: 'Globex Inc', email: 'ap@globex.com', tier: 'Standard', score: 72, notes: 'Reliable but slow approval process.' },
+            { id: 'c_3', name: 'Soylent Corp', email: 'food@soylent.com', tier: 'Standard', score: 68, notes: 'Contact procurement directly.' },
+            { id: 'c_4', name: 'Umbrella Corp', email: 'hive@umbrella.com', tier: 'Critical', score: 20, notes: 'Legal action pending.' },
+            { id: 'c_5', name: 'Stark Ind', email: 'jarvis@stark.com', tier: 'VIP', score: 98, notes: 'Auto-pay enabled.' },
+            { id: 'c_6', name: 'Cyberdyne', email: 'skynet@cyberdyne.com', tier: 'VIP', score: 95, notes: 'Pays immediately.' },
+        ];
+
+        // Helper to generate dates relative to today
+        const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split('T')[0]; };
+        const daysFromNow = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().split('T')[0]; };
+
+        // Initial Invoices
+        const INITIAL_INVOICES = [
+            { id: 'inv_101', customerId: 'c_1', amount: 5200.00, dueDate: daysAgo(65), status: 'OPEN', lastContact: null },
+            { id: 'inv_102', customerId: 'c_2', amount: 1200.00, dueDate: daysAgo(32), status: 'OPEN', lastContact: null },
+            { id: 'inv_103', customerId: 'c_3', amount: 350.00, dueDate: daysAgo(12), status: 'OPEN', lastContact: null },
+            { id: 'inv_104', customerId: 'c_4', amount: 15000.00, dueDate: daysAgo(5), status: 'OPEN', lastContact: null },
+            { id: 'inv_105', customerId: 'c_5', amount: 8900.00, dueDate: daysFromNow(4), status: 'OPEN', lastContact: null },
+            { id: 'inv_106', customerId: 'c_6', amount: 450.00, dueDate: daysFromNow(20), status: 'OPEN', lastContact: null },
+            { id: 'inv_107', customerId: 'c_1', amount: 2100.00, dueDate: daysFromNow(10), status: 'OPEN', lastContact: null },
+            { id: 'inv_108', customerId: 'c_2', amount: 5000.00, dueDate: daysAgo(2), status: 'OPEN', lastContact: null },
+        ];
+
+        const CONFIG = {
+            tiers: { t1: 60, t2: 30, t3: 15, predue: -7 },
+            amounts: { t1: 5000 },
+        };
+
+        // The Central Store
+        const Store = {
+            user: null, // { email, role }
+            view: 'landing', // landing, dashboard, customers, invoices, analytics, etc.
+            invoices: [],
+            customers: MOCK_CUSTOMERS,
+            logs: [], // Email logs
+            fetchLogs: [], // Fetch logs
+            isRunning: false,
+            
+            // Computed properties handled in logic
+            init() {
+                // Hydrate invoices with computed fields
+                this.invoices = JSON.parse(JSON.stringify(INITIAL_INVOICES));
+                this.recalcInvoices();
+            },
+
+            login(email, password) {
+                if (email === ADMIN_CREDS.email && password === ADMIN_CREDS.pass) {
+                    this.user = { email, role: 'Admin', name: 'Admin User' };
+                    this.view = 'dashboard';
+                    render();
+                    return true;
+                } else if (email && password) {
+                    this.user = { email, role: 'User', name: 'Standard User' };
+                    this.view = 'dashboard';
+                    render();
+                    return true;
+                }
+                return false;
+            },
+
+            logout() {
+                this.user = null;
+                this.view = 'landing';
+                render();
+            },
+
+            recalcInvoices() {
+                const today = new Date();
+                this.invoices.forEach(inv => {
+                    const due = new Date(inv.dueDate);
+                    const diffTime = today - due;
+                    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)); 
+                    inv.overdue = diffDays;
+                    
+                    // Tier Logic
+                    if (inv.overdue >= CONFIG.tiers.t1 || (inv.amount >= CONFIG.amounts.t1 && inv.overdue > 0)) {
+                        inv.tier = 'TIER_1_URGENT';
+                    } else if (inv.overdue >= CONFIG.tiers.t2) {
+                        inv.tier = 'TIER_2_STANDARD';
+                    } else if (inv.overdue >= CONFIG.tiers.t3) {
+                        inv.tier = 'TIER_3_GENTLE';
+                    } else if (inv.overdue >= CONFIG.tiers.predue && inv.overdue < 0) {
+                        inv.tier = 'TIER_4_PREDUE';
+                    } else {
+                        inv.tier = 'MONITOR';
+                    }
+
+                    // Priority Score
+                    let amountScore = Math.min((inv.amount / 5000) * 40, 40);
+                    let ageScore = Math.min((Math.max(inv.overdue, 0) / 90) * 40, 40);
+                    inv.priority = Math.floor(20 + amountScore + ageScore);
+                    if (inv.tier === 'MONITOR') inv.priority = 0;
+
+                    // Next Action
+                    if (inv.tier !== 'MONITOR') {
+                         // Simple cooldown check
+                        if (inv.lastContact === new Date().toISOString().split('T')[0]) {
+                            inv.action = 'SCHEDULE';
+                        } else {
+                            inv.action = 'EMAIL_NOW';
+                        }
+                    } else {
+                        inv.action = 'MONITOR_ONLY';
+                    }
+                    
+                    // Attach Customer Name for ease
+                    const cust = this.customers.find(c => c.id === inv.customerId);
+                    inv.customerName = cust ? cust.name : 'Unknown';
+                });
+            },
+
+            updateDueDate(invId, newDate) {
+                const inv = this.invoices.find(i => i.id === invId);
+                if (inv) {
+                    inv.dueDate = newDate;
+                    this.recalcInvoices();
+                    render(); // Re-render to show updates
+                    showToast(`Updated due date for ${invId}`);
+                }
+            },
+
+            fastForward(days) {
+                this.invoices.forEach(inv => {
+                    // Shift due date back in time to simulate aging
+                    const d = new Date(inv.dueDate);
+                    d.setDate(d.getDate() - days);
+                    inv.dueDate = d.toISOString().split('T')[0];
+                    // Reset daily contact limit
+                    if (inv.lastContact) inv.lastContact = null;
+                });
+                this.recalcInvoices();
+                render();
+                showToast(`Time Machine: Advanced ${days} days`);
+            },
+
+            // SIMULATION LOGIC
+            async runWorkflow() {
+                if (this.isRunning) return;
+                this.isRunning = true;
+                render(); // Update UI state
+
+                // 1. Fetch
+                await sleep(800);
+                this.fetchLogs.push({ time: new Date().toLocaleTimeString(), source: 'Stripe API', count: this.invoices.length, notes: 'Sync Success' });
+                
+                // 2. Logic (already recalc'd, but let's pretend)
+                await sleep(500);
+                
+                // 3. Action
+                const actionable = this.invoices.filter(i => i.action === 'EMAIL_NOW');
+                
+                for (const inv of actionable) {
+                    await sleep(400); // Fast email send
+                    inv.lastContact = new Date().toISOString().split('T')[0];
+                    inv.action = 'SCHEDULE';
+                    
+                    const subject = inv.tier.includes('URGENT') ? `URGENT: Invoice ${inv.id}` : `Reminder: Invoice ${inv.id}`;
+                    this.logs.unshift({
+                        time: new Date().toLocaleTimeString(),
+                        customer: inv.customerName,
+                        invoice: inv.id,
+                        subject: subject,
+                        template: inv.tier,
+                        status: 'Sent'
+                    });
+                    
+                    // Update stats in real-time?
+                    // For prototype, we just re-render at end or intervals.
+                }
+
+                this.isRunning = false;
+                this.recalcInvoices();
+                render();
+                showToast('Daily Workflow Complete');
+            }
+        };
+
+        // ==========================================
+        // 2. VIEW RENDERERS
+        // ==========================================
+
+        const formatCurrency = (num) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num);
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        
+        function showToast(msg) {
+            const toast = document.createElement('div');
+            toast.className = 'fixed bottom-5 right-5 bg-slate-800 text-white px-4 py-2 rounded shadow-lg text-sm z-50 fade-in';
+            toast.innerText = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // --- LANDING PAGE ---
+        function renderLanding() {
+            return `
+            <div class="min-h-screen bg-white flex flex-col">
+                <nav class="flex items-center justify-between px-8 py-4 border-b border-slate-100">
+                    <div class="flex items-center gap-2">
+                        <div class="h-8 w-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">F3</div>
+                        <span class="font-bold text-xl tracking-tight text-slate-800">FIN3</span>
+                    </div>
+                    <button onclick="document.getElementById('login-modal').classList.remove('hidden')" class="text-sm font-medium text-slate-600 hover:text-blue-600 transition">Sign In</button>
+                </nav>
+                
+                <main class="flex-1 flex flex-col items-center justify-center text-center px-4">
+                    <div class="max-w-3xl space-y-6 fade-in">
+                        <span class="inline-block px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-xs font-semibold uppercase tracking-wider mb-2">AR Automation Engine</span>
+                        <h1 class="text-5xl md:text-6xl font-bold text-slate-900 tracking-tight leading-tight">
+                            Stop chasing invoices. <br/> <span class="text-blue-600">Start collecting cash.</span>
+                        </h1>
+                        <p class="text-lg text-slate-500 max-w-2xl mx-auto">
+                            FIN3 automates your entire accounts receivable workflow. Sync with Stripe, categorize risk, and send perfect reminders—all on autopilot.
+                        </p>
+                        <div class="pt-4 flex gap-4 justify-center">
+                            <button onclick="document.getElementById('login-modal').classList.remove('hidden')" class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-lg font-semibold text-lg shadow-lg shadow-blue-200 transition-all transform hover:-translate-y-1">
+                                Launch Dashboard
+                            </button>
+                            <button class="bg-white border border-slate-200 text-slate-700 px-8 py-4 rounded-lg font-semibold text-lg hover:bg-slate-50 transition-all">
+                                View Demo
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-8 mt-20 max-w-5xl text-left">
+                        <div class="p-6 rounded-xl border border-slate-100 bg-slate-50/50">
+                            <div class="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center text-indigo-600 mb-4"><i class="fa-solid fa-robot"></i></div>
+                            <h3 class="font-bold text-slate-800 mb-2">Automated Workflows</h3>
+                            <p class="text-sm text-slate-500">Set it and forget it. Daily runs ensure no invoice slips through the cracks.</p>
+                        </div>
+                        <div class="p-6 rounded-xl border border-slate-100 bg-slate-50/50">
+                            <div class="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center text-emerald-600 mb-4"><i class="fa-solid fa-chart-line"></i></div>
+                            <h3 class="font-bold text-slate-800 mb-2">Cash Forecasting</h3>
+                            <p class="text-sm text-slate-500">Predict cash flow with precision based on real invoice due dates and aging.</p>
+                        </div>
+                        <div class="p-6 rounded-xl border border-slate-100 bg-slate-50/50">
+                            <div class="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center text-orange-600 mb-4"><i class="fa-solid fa-stopwatch"></i></div>
+                            <h3 class="font-bold text-slate-800 mb-2">Time Machine</h3>
+                            <p class="text-sm text-slate-500">Simulate future scenarios to see how your portfolio ages over time.</p>
+                        </div>
+                    </div>
+                </main>
+
+                <div id="login-modal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50">
+                    <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md relative fade-in">
+                        <button onclick="document.getElementById('login-modal').classList.add('hidden')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><i class="fa-solid fa-times"></i></button>
+                        
+                        <div class="text-center mb-6">
+                            <div class="h-10 w-10 bg-blue-600 rounded mx-auto flex items-center justify-center text-white font-bold text-xl mb-3">F3</div>
+                            <h2 class="text-2xl font-bold text-slate-800">Welcome back</h2>
+                            <p class="text-sm text-slate-500">Sign in to access your control center</p>
+                        </div>
+
+                        <form onsubmit="event.preventDefault(); handleLogin(this)" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-700 uppercase mb-1">Email</label>
+                                <input type="email" name="email" value="admin@fin3.dev" class="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-700 uppercase mb-1">Password</label>
+                                <input type="password" name="password" value="Fin3_Admin_2026!" class="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                            </div>
+                            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg transition">Sign In</button>
+                        </form>
+
+                        <div class="mt-6 space-y-3">
+                            <div class="relative flex py-1 items-center">
+                                <div class="flex-grow border-t border-slate-200"></div>
+                                <span class="flex-shrink mx-2 text-xs text-slate-400">Or continue with</span>
+                                <div class="flex-grow border-t border-slate-200"></div>
+                            </div>
+                            <button class="w-full bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-medium py-2 rounded-lg text-sm flex items-center justify-center gap-2"><i class="fa-brands fa-google"></i> Google</button>
+                            <button class="w-full bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-medium py-2 rounded-lg text-sm flex items-center justify-center gap-2"><i class="fa-brands fa-github"></i> GitHub</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+
+        // --- MAIN APP SHELL ---
+        function renderAppShell(content) {
+            const menuItems = [
+                { id: 'dashboard', icon: 'fa-gauge-high', label: 'Control Center' },
+                { id: 'customers', icon: 'fa-users', label: 'Customers' },
+                { id: 'invoices', icon: 'fa-file-invoice-dollar', label: 'Invoices' },
+                { id: 'orders', icon: 'fa-box-open', label: 'Orders' },
+                { id: 'analytics', icon: 'fa-chart-pie', label: 'Analytics' },
+                { id: 'forecast', icon: 'fa-money-bill-trend-up', label: 'Cash Forecast' },
+                { id: 'emails', icon: 'fa-envelope', label: 'Email History' },
+                { id: 'logs', icon: 'fa-terminal', label: 'Fetch Logs' },
+            ];
+
+            return `
+            <div class="flex h-screen bg-slate-50">
+                <aside class="w-64 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0 transition-all">
+                    <div class="h-16 flex items-center px-6 border-b border-slate-800 gap-3">
+                        <div class="h-8 w-8 bg-blue-600 rounded flex items-center justify-center text-white font-bold">F3</div>
+                        <span class="font-semibold text-white tracking-tight">FIN3 Engine</span>
+                    </div>
+
+                    <div class="flex-1 overflow-y-auto py-4">
+                        <nav class="px-3 space-y-1">
+                            ${menuItems.map(item => `
+                                <button onclick="Store.view='${item.id}'; render()" 
+                                    class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${Store.view === item.id ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 hover:text-white'}">
+                                    <i class="fa-solid ${item.icon} w-5 text-center"></i> ${item.label}
+                                </button>
+                            `).join('')}
+                        </nav>
+                        
+                        <div class="mt-8 px-6">
+                            <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Top Payers</h3>
+                            <div class="space-y-3">
+                                ${getLeaderboard().slice(0, 3).map((c, i) => `
+                                    <div class="flex items-center gap-3">
+                                        <div class="text-xs font-mono text-slate-500">#${i+1}</div>
+                                        <div class="flex-1">
+                                            <div class="text-xs font-semibold text-slate-200">${c.name}</div>
+                                            <div class="w-full bg-slate-800 h-1.5 rounded-full mt-1 overflow-hidden">
+                                                <div class="bg-emerald-500 h-full" style="width: ${c.score}%"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-4 border-t border-slate-800">
+                        <div class="flex items-center gap-3">
+                            <div class="h-8 w-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold text-white">
+                                ${Store.user.name.charAt(0)}
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="text-xs font-medium text-white truncate">${Store.user.name}</div>
+                                <div class="text-[10px] text-slate-500 truncate">${Store.user.email}</div>
+                            </div>
+                            <button onclick="Store.logout()" class="text-slate-500 hover:text-white"><i class="fa-solid fa-right-from-bracket"></i></button>
+                        </div>
+                    </div>
+                </aside>
+
+                <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+                    <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shadow-sm z-10">
+                        <h2 class="text-lg font-semibold text-slate-800 capitalize">${Store.view.replace('-', ' ')}</h2>
+                        <div class="flex items-center gap-4 text-sm">
+                            <div class="flex items-center gap-2 text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100">
+                                <span class="status-dot ${Store.isRunning ? 'dot-green animate-pulse' : 'dot-idle'}"></span>
+                                <span>${Store.isRunning ? 'Workflow Running...' : 'System Idle'}</span>
+                            </div>
+                            <div class="h-4 w-px bg-slate-300"></div>
+                            <div class="text-slate-400">Next Run: <span class="font-mono text-slate-600">08:00 AM</span></div>
+                        </div>
+                    </header>
+
+                    <main class="flex-1 overflow-y-auto p-8 relative">
+                        ${content}
+                    </main>
+                </div>
+            </div>
+            `;
+        }
+
+        // --- VIEWS ---
+
+        function renderDashboard() {
+            const stats = {
+                fetched: Store.invoices.length,
+                sent: Store.logs.length,
+                critical: Store.invoices.filter(i => i.tier === 'TIER_1_URGENT').reduce((sum, i) => sum + i.amount, 0),
+                collectable: Store.invoices.filter(i => i.action === 'EMAIL_NOW').reduce((sum, i) => sum + i.amount, 0)
+            };
+
+            return `
+            <div class="grid grid-cols-12 gap-6">
+                <div class="col-span-12 lg:col-span-8 space-y-6">
+                    <div class="grid grid-cols-4 gap-4">
+                        <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                            <div class="text-xs text-slate-500 uppercase font-semibold mb-1">Fetched</div>
+                            <div class="text-2xl font-bold text-slate-700">${stats.fetched}</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                            <div class="text-xs text-slate-500 uppercase font-semibold mb-1">Sent Today</div>
+                            <div class="text-2xl font-bold text-blue-600">${stats.sent}</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                            <div class="text-xs text-slate-500 uppercase font-semibold mb-1">Critical Overdue</div>
+                            <div class="text-2xl font-bold text-red-600">${formatCurrency(stats.critical)}</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                            <div class="text-xs text-slate-500 uppercase font-semibold mb-1">Actionable</div>
+                            <div class="text-2xl font-bold text-emerald-600">${formatCurrency(stats.collectable)}</div>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-4">
+                        <div class="flex-1 bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <h3 class="font-bold text-slate-700">Daily Workflow</h3>
+                                <p class="text-sm text-slate-500">Trigger manual run of fetching & emailing.</p>
+                            </div>
+                            <button onclick="Store.runWorkflow()" ${Store.isRunning ? 'disabled' : ''} class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg font-medium transition flex items-center gap-2">
+                                <i class="fa-solid fa-play"></i> Run Now
+                            </button>
+                        </div>
+                        <div class="flex-1 bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <h3 class="font-bold text-slate-700">Time Machine</h3>
+                                <p class="text-sm text-slate-500">Simulate passage of time for aging.</p>
+                            </div>
+                            <button onclick="Store.fastForward(15)" class="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg font-medium transition flex items-center gap-2">
+                                <i class="fa-solid fa-clock-rotate-left"></i> +15 Days
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+                            <h3 class="font-bold text-slate-700">Active Invoices</h3>
+                            <button onclick="Store.view='invoices'; render()" class="text-xs text-blue-600 font-medium hover:underline">View All</button>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left">
+                                <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
+                                    <tr>
+                                        <th class="px-6 py-3 font-semibold">Customer</th>
+                                        <th class="px-6 py-3 font-semibold text-right">Amount</th>
+                                        <th class="px-6 py-3 font-semibold text-center">Overdue</th>
+                                        <th class="px-6 py-3 font-semibold">Tier</th>
+                                        <th class="px-6 py-3 font-semibold text-center">Priority</th>
+                                        <th class="px-6 py-3 font-semibold">Next Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100 text-sm">
+                                    ${Store.invoices.sort((a,b) => b.priority - a.priority).slice(0, 5).map(inv => renderInvoiceRow(inv)).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-span-12 lg:col-span-4 space-y-6">
+                    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 h-full flex flex-col">
+                        <h3 class="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                            <i class="fa-solid fa-trophy text-yellow-500"></i> Best Customers
+                        </h3>
+                        <div class="flex-1 space-y-4">
+                            ${getLeaderboard().map((c, i) => `
+                                <div class="flex items-center gap-4 p-3 rounded-lg hover:bg-slate-50 transition border border-transparent hover:border-slate-100">
+                                    <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-sm font-bold text-slate-500">#${i+1}</div>
+                                    <div class="flex-1">
+                                        <div class="font-semibold text-slate-700">${c.name}</div>
+                                        <div class="text-xs text-slate-400">Score: ${c.score}/100</div>
+                                    </div>
+                                    ${i === 0 ? '<span class="badge bg-yellow-100 text-yellow-700">Hero</span>' : ''}
+                                    ${i === 1 ? '<span class="badge bg-emerald-100 text-emerald-700">Fast</span>' : ''}
+                                    <div class="font-mono font-bold text-slate-700">${c.score}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        function renderInvoices() {
+            return `
+            <div class="space-y-6 fade-in">
+                <div class="flex justify-between items-center">
+                    <div class="relative w-64">
+                        <i class="fa-solid fa-search absolute left-3 top-3 text-slate-400 text-sm"></i>
+                        <input type="text" placeholder="Search invoices..." class="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div class="flex gap-2">
+                         <button class="bg-white border border-slate-300 text-slate-600 px-3 py-2 rounded-lg text-sm font-medium">Filter: All Status</button>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
+                            <tr>
+                                <th class="px-6 py-3 font-semibold">Invoice ID</th>
+                                <th class="px-6 py-3 font-semibold">Customer</th>
+                                <th class="px-6 py-3 font-semibold">Due Date (Edit)</th>
+                                <th class="px-6 py-3 font-semibold text-right">Amount</th>
+                                <th class="px-6 py-3 font-semibold text-center">Overdue</th>
+                                <th class="px-6 py-3 font-semibold">Tier</th>
+                                <th class="px-6 py-3 font-semibold">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 text-sm">
+                            ${Store.invoices.map(inv => `
+                                <tr class="hover:bg-slate-50 transition">
+                                    <td class="px-6 py-4 font-mono text-xs text-slate-500">${inv.id}</td>
+                                    <td class="px-6 py-4 font-medium text-slate-700">${inv.customerName}</td>
+                                    <td class="px-6 py-4">
+                                        <input type="date" value="${inv.dueDate}" onchange="Store.updateDueDate('${inv.id}', this.value)" 
+                                        class="bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs text-slate-600 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer hover:bg-white">
+                                    </td>
+                                    <td class="px-6 py-4 text-right font-mono text-slate-600">${formatCurrency(inv.amount)}</td>
+                                    <td class="px-6 py-4 text-center">
+                                        <span class="${inv.overdue > 0 ? 'text-red-600 font-bold' : 'text-slate-400'}">${inv.overdue}d</span>
+                                    </td>
+                                    <td class="px-6 py-4">${getTierBadge(inv.tier)}</td>
+                                    <td class="px-6 py-4">${inv.status}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        function renderCustomers() {
+            return `
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 fade-in">
+                ${Store.customers.map(c => {
+                    const totalDue = Store.invoices.filter(i => i.customerId === c.id).reduce((sum, i) => sum + i.amount, 0);
+                    const invoiceCount = Store.invoices.filter(i => i.customerId === c.id).length;
+                    
+                    return `
+                    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 hover:shadow-md transition">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <h3 class="font-bold text-slate-800 text-lg">${c.name}</h3>
+                                <div class="text-sm text-slate-500">${c.email}</div>
+                            </div>
+                            <div class="h-10 w-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-600">${c.score}</div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4 mb-4">
+                            <div class="bg-slate-50 p-3 rounded-lg">
+                                <div class="text-[10px] text-slate-400 uppercase font-bold">Outstanding</div>
+                                <div class="font-bold text-slate-700">${formatCurrency(totalDue)}</div>
+                            </div>
+                            <div class="bg-slate-50 p-3 rounded-lg">
+                                <div class="text-[10px] text-slate-400 uppercase font-bold">Invoices</div>
+                                <div class="font-bold text-slate-700">${invoiceCount}</div>
+                            </div>
+                        </div>
+                        <div class="text-xs text-slate-500 italic border-t border-slate-100 pt-3">"${c.notes}"</div>
+                    </div>
+                    `;
+                }).join('')}
+            </div>`;
+        }
+
+        function renderAnalytics() {
+            // Prepare Data for Charts
+            const tierCounts = { Urgent: 0, Standard: 0, Gentle: 0, Monitor: 0 };
+            Store.invoices.forEach(i => {
+                if (i.tier.includes('URGENT')) tierCounts.Urgent += i.amount;
+                else if (i.tier.includes('STANDARD')) tierCounts.Standard += i.amount;
+                else if (i.tier.includes('GENTLE')) tierCounts.Gentle += i.amount;
+                else tierCounts.Monitor += i.amount;
+            });
+
+            setTimeout(() => {
+                // Initialize Charts after render
+                new Chart(document.getElementById('chart-tier'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: Object.keys(tierCounts),
+                        datasets: [{ data: Object.values(tierCounts), backgroundColor: ['#ef4444', '#eab308', '#3b82f6', '#94a3b8'] }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+                
+                // Forecast Chart
+                const dates = Array.from({length: 7}, (_, i) => daysFromNow(i));
+                const values = dates.map(d => Store.invoices.filter(i => i.dueDate === d).reduce((s, x) => s + x.amount, 0));
+                
+                new Chart(document.getElementById('chart-forecast'), {
+                    type: 'bar',
+                    data: {
+                        labels: dates.map(d => d.slice(5)), // MM-DD
+                        datasets: [{ label: 'Incoming Cash', data: values, backgroundColor: '#10b981', borderRadius: 4 }]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+                });
+            }, 100);
+
+            return `
+            <div class="space-y-6 fade-in">
+                <div class="grid grid-cols-4 gap-6">
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                        <div class="text-sm text-slate-500">Total Receivables</div>
+                        <div class="text-2xl font-bold text-slate-800">${formatCurrency(Store.invoices.reduce((a,b)=>a+b.amount,0))}</div>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                        <div class="text-sm text-slate-500">Avg. Days Overdue</div>
+                        <div class="text-2xl font-bold text-orange-600">
+                            ${Math.floor(Store.invoices.reduce((a,b)=>a+(b.overdue > 0 ? b.overdue : 0),0) / Store.invoices.length)} days
+                        </div>
+                    </div>
+                     <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                        <div class="text-sm text-slate-500">Active Customers</div>
+                        <div class="text-2xl font-bold text-blue-600">${Store.customers.length}</div>
+                    </div>
+                     <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                        <div class="text-sm text-slate-500">Collection Efficiency</div>
+                        <div class="text-2xl font-bold text-emerald-600">84%</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-6 h-80">
+                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                        <h3 class="font-bold text-slate-700 mb-4">Risk Exposure by Tier</h3>
+                        <div class="flex-1 relative"><canvas id="chart-tier"></canvas></div>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                        <h3 class="font-bold text-slate-700 mb-4">7-Day Cash Inflow Forecast</h3>
+                        <div class="flex-1 relative"><canvas id="chart-forecast"></canvas></div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        
+        function renderForecast() {
+            // Calculate buckets
+            let buckets = {};
+            Store.invoices.forEach(inv => {
+                if(!buckets[inv.dueDate]) buckets[inv.dueDate] = 0;
+                buckets[inv.dueDate] += inv.amount;
+            });
+            // Sort dates
+            const sortedDates = Object.keys(buckets).sort();
+
+            return `
+            <div class="space-y-6 fade-in">
+                <div class="bg-emerald-50 border border-emerald-100 p-6 rounded-xl flex items-center gap-4">
+                    <div class="h-12 w-12 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 text-xl"><i class="fa-solid fa-sack-dollar"></i></div>
+                    <div>
+                        <div class="text-emerald-800 font-bold text-lg">Projected Cash (Next 30 Days)</div>
+                        <div class="text-emerald-600 text-sm">Based on current due dates. Adjust due dates in "Invoices" to simulate shifts.</div>
+                    </div>
+                    <div class="ml-auto text-3xl font-bold text-emerald-700">
+                        ${formatCurrency(Object.values(buckets).reduce((a,b)=>a+b,0))}
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm">
+                    <table class="w-full text-left">
+                         <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
+                            <tr>
+                                <th class="px-6 py-3">Due Date</th>
+                                <th class="px-6 py-3">Projected Inflow</th>
+                                <th class="px-6 py-3">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 text-sm">
+                            ${sortedDates.map(date => {
+                                const isPast = new Date(date) < new Date();
+                                return `
+                                <tr>
+                                    <td class="px-6 py-4 font-mono text-slate-600">${date}</td>
+                                    <td class="px-6 py-4 font-bold text-slate-800">${formatCurrency(buckets[date])}</td>
+                                    <td class="px-6 py-4">
+                                        <span class="badge ${isPast ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}">
+                                            ${isPast ? 'OVERDUE' : 'EXPECTED'}
+                                        </span>
+                                    </td>
+                                </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+        }
+
+        function renderEmailHistory() {
+            return `
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden fade-in">
+                <table class="w-full text-left">
+                    <thead class="bg-slate-50 text-xs text-slate-500 uppercase">
+                        <tr>
+                            <th class="px-6 py-3">Time</th>
+                            <th class="px-6 py-3">Customer</th>
+                            <th class="px-6 py-3">Subject</th>
+                            <th class="px-6 py-3">Template</th>
+                            <th class="px-6 py-3">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 text-sm">
+                        ${Store.logs.length === 0 ? '<tr><td colspan="5" class="px-6 py-8 text-center text-slate-400">No emails sent yet. Run the workflow.</td></tr>' : ''}
+                        ${Store.logs.map(log => `
+                            <tr>
+                                <td class="px-6 py-4 font-mono text-xs text-slate-500">${log.time}</td>
+                                <td class="px-6 py-4 font-medium text-slate-700">${log.customer}</td>
+                                <td class="px-6 py-4 text-slate-600">${log.subject}</td>
+                                <td class="px-6 py-4">${getTierBadge(log.template)}</td>
+                                <td class="px-6 py-4"><span class="text-green-600 font-bold text-xs"><i class="fa-solid fa-check"></i> SENT</span></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+        }
+        
+        function renderLogs() {
+             return `
+            <div class="bg-slate-900 rounded-xl border border-slate-800 shadow-sm overflow-hidden fade-in text-slate-300 font-mono text-xs">
+                <div class="bg-slate-800 px-4 py-2 border-b border-slate-700 flex justify-between">
+                     <span>system_ingestion.log</span>
+                     <div class="flex gap-2"><div class="w-2 h-2 rounded-full bg-red-500"></div><div class="w-2 h-2 rounded-full bg-yellow-500"></div><div class="w-2 h-2 rounded-full bg-green-500"></div></div>
+                </div>
+                <div class="p-4 space-y-2 h-[500px] overflow-y-auto">
+                    <div>[SYSTEM] Daemon initialized...</div>
+                    ${Store.fetchLogs.map(l => `
+                        <div><span class="text-slate-500">[${l.time}]</span> <span class="text-blue-400">${l.source}</span>: Fetched ${l.count} records. ${l.notes}</div>
+                    `).join('')}
+                </div>
+            </div>`;
+        }
+
+        function renderOrders() {
+             return `
+             <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center fade-in">
+                <div class="h-16 w-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                    <i class="fa-solid fa-box-open"></i>
+                </div>
+                <h3 class="text-lg font-bold text-slate-800">Order Synchronization</h3>
+                <p class="text-slate-500 max-w-md mx-auto mt-2">This view would connect to the ERP (e.g., Netsuite/Shopify) to show line-item details for every invoice.</p>
+                <div class="mt-6 border-t border-slate-100 pt-6">
+                    <div class="text-xs font-mono text-slate-400 bg-slate-50 inline-block px-3 py-1 rounded">Mock Data: Enabled</div>
+                </div>
+             </div>`;
+        }
+
+        // --- HELPERS ---
+        function getTierBadge(tier) {
+            if (tier.includes('URGENT')) return `<span class="badge badge-urgent">Urgent</span>`;
+            if (tier.includes('STANDARD')) return `<span class="badge badge-standard">Standard</span>`;
+            if (tier.includes('GENTLE')) return `<span class="badge badge-gentle">Gentle</span>`;
+            if (tier.includes('PREDUE')) return `<span class="badge badge-predue">Pre-Due</span>`;
+            return `<span class="badge badge-monitor">Monitor</span>`;
+        }
+        
+        function renderInvoiceRow(inv) {
+            // Helper for dashboard table
+            let actionHtml = `<span class="text-slate-400 text-xs font-mono">Monitoring</span>`;
+            if (inv.action === 'EMAIL_NOW') actionHtml = `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-600 text-white text-xs font-bold animate-pulse"><i class="fa-solid fa-paper-plane"></i> EMAIL NOW</span>`;
+            if (inv.action === 'SCHEDULE') actionHtml = `<span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-200 text-slate-600 text-xs font-semibold"><i class="fa-regular fa-clock"></i> Scheduled</span>`;
+
+            return `
+            <tr class="hover:bg-slate-50 transition border-b border-slate-50 last:border-0">
+                <td class="px-6 py-4 font-medium text-slate-700">${inv.customerName}</td>
+                <td class="px-6 py-4 text-right font-mono text-slate-600">${formatCurrency(inv.amount)}</td>
+                <td class="px-6 py-4 text-center">
+                    <span class="${inv.overdue > 0 ? 'text-red-600 font-bold' : 'text-slate-400'}">${inv.overdue}d</span>
+                </td>
+                <td class="px-6 py-4">${getTierBadge(inv.tier)}</td>
+                <td class="px-6 py-4 text-center text-xs font-mono text-slate-500">${inv.priority}</td>
+                <td class="px-6 py-4">${actionHtml}</td>
+            </tr>`;
+        }
+        
+        function getLeaderboard() {
+            return Store.customers.sort((a,b) => b.score - a.score);
+        }
+
+        function handleLogin(form) {
+            const email = form.email.value;
+            const pass = form.password.value;
+            if(!Store.login(email, pass)) {
+                alert('Invalid Credentials. Try admin@fin3.dev / Fin3_Admin_2026!');
+            }
+        }
+
+        // ==========================================
+        // 3. MAIN RENDER LOOP
+        // ==========================================
+        function render() {
+            const root = document.getElementById('app-root');
+            
+            if (!Store.user) {
+                root.innerHTML = renderLanding();
+                return;
+            }
+            
+            let content = '';
+            switch(Store.view) {
+                case 'dashboard': content = renderDashboard(); break;
+                case 'customers': content = renderCustomers(); break;
+                case 'invoices': content = renderInvoices(); break;
+                case 'analytics': content = renderAnalytics(); break;
+                case 'forecast': content = renderForecast(); break;
+                case 'emails': content = renderEmailHistory(); break;
+                case 'logs': content = renderLogs(); break;
+                case 'orders': content = renderOrders(); break;
+                default: content = renderDashboard();
+            }
+            
+            root.innerHTML = renderAppShell(content);
+        }
+
+        // Init
+        Store.init();
+        render();
+
+    </script>
+</body>
+</html>
